@@ -42,6 +42,14 @@ Install with your favorite package manager:
       end,
       desc = "Toggle Commands (Word Context)",
     },
+    {
+      "<leader>cs",
+      function()
+        require("toggle-commands").open("selection")
+      end,
+      mode = "v",
+      desc = "Toggle Commands (Selection Context)",
+    },
   },
   opts = {
     commands = {
@@ -85,22 +93,39 @@ Each command in the list is a table:
 {
   name = "My Command Name",
   cmd = "your-shell-command {input}",
-  terminal_opts = { direction = "vertical" } -- Optional ToggleTerm options
+  key = "<C-g>", -- Optional: direct shortcut inside Telescope picker
+  terminal_opts = {
+    id = 10,                 -- Custom ToggleTerm ID
+    direction = "vertical",  -- "horizontal" | "vertical" | "float" | "tab"
+    size = 40,               -- Width/height depending on direction
+    go_back = false,         -- Retain focus in terminal
+  }
 }
 ```
 
-Available `terminal_opts` are merged directly with ToggleTerm's execution options (e.g. `direction = "horizontal" | "vertical" | "float"`).
+Global defaults can also be configured in `setup()` under `terminal_opts`. Individual command `terminal_opts` override the global defaults.
 
 ### Dynamic Placeholders
 1.  **`{input}`**:
     - If opened with `open("file")`, resolves to the **relative path** of the active file.
     - If opened with `open("word")`, resolves to the **word under the cursor**.
+    - If opened with `open("selection")`, resolves to the **selected text**.
 2.  **`{input:modifier}`**: (Only active in file-mode)
     - `{input:p}`: Absolute path.
     - `{input:h}`: Parent directory/head.
     - `{input:t}`: Filename/tail.
     - `{input:r}`: Path without extension.
-3.  **`{prompt}`** or **`{prompt:Label}`**:
+3.  **`{line}` / `{line_count}` / `{start_line}` / `{end_line}`**:
+    - Current line number, buffer total line count, or selection range start/end lines.
+4.  **`{line_text}`**:
+    - Full text content of the current cursor line.
+5.  **`{clipboard}`**:
+    - Contents of the system clipboard (`+` or `"` register).
+6.  **`{selection}`**:
+    - Visually selected text.
+7.  **`{git_branch}` / `{git_root}` / `{blame_commit}`**:
+    - Current Git branch name, Git repository root path, or git blame commit hash for current cursor line.
+8.  **`{prompt}`** or **`{prompt:Label}`**:
     - Prompts the user dynamically with an input box before executing the command, replacing the placeholder with the custom value.
 
 ---
@@ -110,3 +135,4 @@ Available `terminal_opts` are merged directly with ToggleTerm's execution option
 Inside the Telescope picker:
 - `<CR>` (Enter): Execute the selected command.
 - `<C-e>`: Edit the fully substituted command in-line before running it.
+- `[Custom Key]`: Directly run any command configured with `key` / `mapping` (e.g., `<C-g>`).

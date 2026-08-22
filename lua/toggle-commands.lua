@@ -2,6 +2,10 @@ local M = {}
 
 -- Default configuration options
 M.opts = {
+  terminal_opts = {
+    id = 99,
+    direction = "horizontal",
+  },
   commands = {
     {
       name = "Run Python/Bash file",
@@ -30,40 +34,146 @@ function M.setup(opts)
   M.opts = vim.tbl_deep_extend("force", M.opts or {}, opts or {})
 end
 
--- Helper to substitute {input} and optional modifiers
-local function substitute(cmd, val, is_file)
-  -- Find matches for {input:MODIFIERS} or {input}
+-- Helper to extract visual selection
+local function get_visual_selection()
+  local mode_char = vim.fn.mode()
+  local is_visual = mode_char:match("[vV\22]")
+  local vstart = vim.fn.getpos(is_visual and "v" or "'<")
+  local vend = vim.fn.getpos(is_visual and "." or "'>")
+  local start_line, end_line = vstart[2], vend[2]
+  local start_col, end_col = vstart[3], vend[3]
+
+  if start_line > end_line or (start_line == end_line and start_col > end_col) then
+    start_line, end_line = end_line, start_line
+    start_col, end_col = end_col, start_col
+  end
+
+  if start_line == 0 then
+    start_line = vim.api.nvim_win_get_cursor(0)[1]
+    end_line = start_line
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
+  if #lines == 0 then
+    return "", start_line, end_line
+  end
+
+  if is_visual and mode_char == "V" then
+    return table.concat(lines, "\n"), start_line, end_line
+  end
+
+  if #lines == 1 then
+    lines[1] = string.sub(lines[1], start_col, end_col)
+  else
+    lines[1] = string.sub(lines[1], start_col)
+    lines[#lines] = string.sub(lines[#lines], 1, end_col)
+  end
+
+  return table.concat(lines, "\n"), start_line, end_line
+end
+
+-- Helper to substitute placeholders in command templates
+local function substitute(cmd, ctx)
+  -- 1. {input:MODIFIERS} or {input}
   local result = cmd:gsub("({input:?([^}]*)})", function(match, modifier)
     if modifier == "" then
-      local resolved = is_file and vim.fn.fnamemodify(val, ":.") or val
+      local resolved = ctx.is_file and vim.fn.fnamemodify(ctx.input, ":.") or ctx.input
       return vim.fn.shellescape(resolved)
     else
-      if is_file then
-        local resolved = vim.fn.fnamemodify(val, ":" .. modifier)
+      if ctx.is_file then
+        local resolved = vim.fn.fnamemodify(ctx.input, ":" .. modifier)
         return vim.fn.shellescape(resolved)
       else
-        return vim.fn.shellescape(val)
+        return vim.fn.shellescape(ctx.input)
       end
     end
   end)
+
+  -- 2. Line context (numbers kept unquoted for clean range syntax)
+  result = result:gsub("{line}", tostring(ctx.line or 1))
+  result = result:gsub("{line_count}", tostring(ctx.line_count or 1))
+  result = result:gsub("{start_line}", tostring(ctx.start_line or ctx.line or 1))
+  result = result:gsub("{end_line}", tostring(ctx.end_line or ctx.line or 1))
+
+  -- 3. Line text and selection
+  result = result:gsub("{line_text}", function()
+    return vim.fn.shellescape(ctx.line_text or "")
+  end)
+  result = result:gsub("{selection}", function()
+    return vim.fn.shellescape(ctx.selection or "")
+  end)
+
+  -- 4. Clipboard contents
+  result = result:gsub("{clipboard}", function()
+    local cb = vim.fn.getreg("+")
+    if cb == "" then
+      cb = vim.fn.getreg('"')
+    end
+    return vim.fn.shellescape(cb)
+  end)
+
+  -- 5. Git context
+  result = result:gsub("{git_branch}", function()
+    local dir = (ctx.filepath and ctx.filepath ~= "") and vim.fs.dirname(ctx.filepath) or vim.fn.getcwd()
+    local res = vim.fn.systemlist("git -C " .. vim.fn.shellescape(dir) .. " rev-parse --abbrev-ref HEAD 2>/dev/null")
+    local branch = (vim.v.shell_error == 0 and res and #res > 0) and res[1] or ""
+    return vim.fn.shellescape(branch)
+  end)
+
+  result = result:gsub("{git_root}", function()
+    local dir = (ctx.filepath and ctx.filepath ~= "") and vim.fs.dirname(ctx.filepath) or vim.fn.getcwd()
+    local res = vim.fn.systemlist("git -C " .. vim.fn.shellescape(dir) .. " rev-parse --show-toplevel 2>/dev/null")
+    local root = (vim.v.shell_error == 0 and res and #res > 0) and res[1] or ""
+    return vim.fn.shellescape(root)
+  end)
+
+  result = result:gsub("{blame_commit}", function()
+    if not ctx.filepath or ctx.filepath == "" then
+      return ""
+    end
+    local dir = vim.fs.dirname(ctx.filepath)
+    local line_num = ctx.line or 1
+    local res = vim.fn.systemlist("git -C " .. vim.fn.shellescape(dir) .. " blame -L " .. line_num .. "," .. line_num .. " -l --porcelain " .. vim.fn.shellescape(ctx.filepath) .. " 2>/dev/null")
+    if vim.v.shell_error == 0 and res and #res > 0 then
+      local commit = res[1]:match("^(%x+)")
+      return vim.fn.shellescape(commit or "")
+    end
+    return ""
+  end)
+
   return result
 end
 
 -- Execute in ToggleTerm
 function M.run_in_toggleterm(cmd, terminal_opts)
   local toggleterm = require("toggleterm")
-  local id = 99 -- Dedicated ID to keep main terminal clean
 
   local opts = {
+    id = 99,
     direction = "horizontal",
   }
+
+  if M.opts.terminal_opts then
+    opts = vim.tbl_deep_extend("force", opts, M.opts.terminal_opts)
+  end
 
   if terminal_opts then
     opts = vim.tbl_deep_extend("force", opts, terminal_opts)
   end
 
+  local id = opts.id or opts.num or 99
+
   -- exec(cmd, num, size, dir, direction, name, go_back, open)
-  toggleterm.exec(cmd, id, nil, nil, opts.direction, nil, nil, nil)
+  toggleterm.exec(
+    cmd,
+    id,
+    opts.size,
+    opts.dir,
+    opts.direction,
+    opts.name,
+    opts.go_back,
+    opts.open
+  )
 end
 
 -- Handle prompt and execute command
@@ -88,7 +198,7 @@ function M.execute_command(entry)
 end
 
 -- Open the picker
-function M.open_picker(val, is_file)
+function M.open_picker(val, is_file, extra_ctx)
   local pickers = require("telescope.pickers")
   local finders = require("telescope.finders")
   local conf = require("telescope.config").values
@@ -96,21 +206,47 @@ function M.open_picker(val, is_file)
   local action_state = require("telescope.actions.state")
   local entry_display = require("telescope.pickers.entry_display")
 
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor_pos = vim.api.nvim_win_get_cursor(0)
+
+  local ctx = {
+    input = val,
+    is_file = is_file,
+    bufnr = bufnr,
+    filepath = vim.api.nvim_buf_get_name(bufnr),
+    line = cursor_pos[1],
+    line_count = vim.api.nvim_buf_line_count(bufnr),
+    line_text = vim.api.nvim_get_current_line(),
+  }
+
+  if extra_ctx then
+    ctx = vim.tbl_deep_extend("force", ctx, extra_ctx)
+  end
+
   local items = {}
   for _, cmd_opt in ipairs(M.opts.commands) do
-    local substituted = substitute(cmd_opt.cmd, val, is_file)
+    local substituted = substitute(cmd_opt.cmd, ctx)
+    local key = cmd_opt.key or cmd_opt.mapping
+    local key_label = ""
+    if key then
+      key_label = type(key) == "table" and table.concat(key, ", ") or tostring(key)
+    end
+    local display_label = (key_label ~= "") and (cmd_opt.name .. " [" .. key_label .. "]") or cmd_opt.name
+
     table.insert(items, {
       name = cmd_opt.name,
+      display_label = display_label,
       cmd_raw = cmd_opt.cmd,
       cmd_substituted = substituted,
       terminal_opts = cmd_opt.terminal_opts,
+      key = key,
     })
   end
 
   -- Dynamically calculate the maximum command name length for clean alignment
   local max_name_len = 20
   for _, item in ipairs(items) do
-    local name_len = vim.fn.strdisplaywidth(item.name)
+    local name_len = vim.fn.strdisplaywidth(item.display_label)
     if name_len > max_name_len then
       max_name_len = name_len
     end
@@ -124,10 +260,10 @@ function M.open_picker(val, is_file)
     },
   }
 
-  local display_name = is_file and "File" or "Word"
-  local display_val = vim.fn.fnamemodify(val, ":t")
-  if display_val == "" then
-    display_val = val
+  local display_name = ctx.mode_name or (is_file and "File" or "Word")
+  local display_val = is_file and vim.fn.fnamemodify(val, ":t") or val
+  if #display_val > 25 then
+    display_val = display_val:sub(1, 22) .. "..."
   end
 
   pickers.new({}, {
@@ -137,7 +273,7 @@ function M.open_picker(val, is_file)
       entry_maker = function(entry)
         local make_display = function(ent)
           return displayer {
-            ent.value.name,
+            ent.value.display_label,
             ent.value.cmd_substituted,
           }
         end
@@ -145,7 +281,7 @@ function M.open_picker(val, is_file)
         return {
           value = entry,
           display = make_display,
-          ordinal = entry.name .. " " .. entry.cmd_substituted,
+          ordinal = entry.display_label .. " " .. entry.cmd_substituted,
         }
       end,
     },
@@ -158,6 +294,21 @@ function M.open_picker(val, is_file)
           M.execute_command(selection.value)
         end
       end)
+
+      -- Bind direct shortcuts for configured commands
+      for _, item in ipairs(items) do
+        if item.key then
+          local keys = type(item.key) == "table" and item.key or { item.key }
+          for _, k in ipairs(keys) do
+            local run_item = function()
+              actions.close(prompt_bufnr)
+              M.execute_command(item)
+            end
+            map("i", k, run_item)
+            map("n", k, run_item)
+          end
+        end
+      end
 
       -- Edit command in-line before execution with <C-e>
       local edit_cmd = function()
@@ -187,6 +338,7 @@ end
 function M.open(mode)
   local val = ""
   local is_file = false
+  local extra_ctx = {}
 
   if mode == "file" then
     val = vim.api.nvim_buf_get_name(0)
@@ -195,19 +347,29 @@ function M.open(mode)
       return
     end
     is_file = true
+    extra_ctx.mode_name = "File"
   elseif mode == "word" then
     val = vim.fn.expand("<cword>")
     if val == "" then
       vim.ui.input({ prompt = "No word under cursor. Enter input: " }, function(input)
         if input and input ~= "" then
-          M.open_picker(input, false)
+          M.open_picker(input, false, { mode_name = "Word" })
         end
       end)
       return
     end
+    extra_ctx.mode_name = "Word"
+  elseif mode == "selection" then
+    local sel_text, s_line, e_line = get_visual_selection()
+    val = sel_text
+    is_file = false
+    extra_ctx.selection = sel_text
+    extra_ctx.start_line = s_line
+    extra_ctx.end_line = e_line
+    extra_ctx.mode_name = "Selection"
   end
 
-  M.open_picker(val, is_file)
+  M.open_picker(val, is_file, extra_ctx)
 end
 
 return M
