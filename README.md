@@ -1,16 +1,17 @@
 # toggle-commands.nvim
 
-A lightweight, context-aware command runner for Neovim that presents a list of configured commands using **Telescope** and executes them inside isolated **ToggleTerm** terminals.
+A lightweight, context-aware command runner for Neovim that presents a list of configured commands using **Telescope** and executes them inside isolated **ToggleTerm** terminals. Commands can be run either interactively via Telescope or directly with global keybindings and Lua API calls without opening the picker.
 
 ## ✨ Features
 
-- **Context-Aware Interpolation:** Define your commands with `{input}` which is dynamically replaced with either the current file path or the word under the cursor, depending on how you invoke the picker.
+- **Context-Aware Interpolation:** Define your commands with `{input}` which is dynamically replaced with the current file path, the word under the cursor, or visual selection.
+- **Direct Execution & Keybindings:** Bind commands directly to global Neovim keymaps via `key` in your config, or run them programmatically via `require("toggle-commands").run("Command Name")`.
 - **Vim Filename Modifiers:** Use standard Vim modifiers on paths (e.g., `{input:p}` for absolute path, `{input:h}` for parent directory, `{input:t}` for filename only, `{input:r}` for path without extension). Modifiers are ignored for cursor words.
 - **Dynamic Variable Preview:** See the fully-substituted command directly in the Telescope results list before executing it!
 - **Interactive `{prompt}` capability:** Include `{prompt}` or `{prompt:Some Label}` in your commands to dynamically ask for additional inputs via `vim.ui.input` before running the command.
 - **Isolated Terminal Sessions:** Runs commands in a dedicated ToggleTerm instance (default ID `99`) so your main terminal remains undisturbed.
 - **In-line Editing:** Press `<C-e>` in the Telescope picker to manually edit the fully substituted command in-line before execution.
-- **Elegant Alignment:** Automatically aligns columns dynamically using Telescope's native layout utilities, perfectly accounting for Nerd Font icons and UTF-8 characters.
+- **User Commands:** Run commands from the Vim command line using `:ToggleCommand <Name>` with tab completion.
 
 ---
 
@@ -56,10 +57,12 @@ Install with your favorite package manager:
       {
         name = "Run Python/Bash file",
         cmd = "chmod +x {input} && {input:p}",
+        key = "<leader>rf", -- Directly launch from Neovim without opening the picker!
       },
       {
         name = "Grep occurrences in project",
         cmd = "rg {input}",
+        key = "<leader>rg",
       },
       {
         name = "Git log / history for file",
@@ -93,12 +96,14 @@ Each command in the list is a table:
 {
   name = "My Command Name",
   cmd = "your-shell-command {input}",
-  key = "<C-g>", -- Optional: direct shortcut inside Telescope picker
+  key = "<leader>rc",           -- Optional: direct Neovim keybind (normal & visual mode by default)
+  key_mode = { "n", "v" },      -- Optional: vim mode(s) for the keymap ("n", "v", etc.)
+  context = "file",             -- Optional: "file" | "word" | "selection" | "auto" (default: "auto")
   terminal_opts = {
-    id = 10,                 -- Custom ToggleTerm ID
-    direction = "vertical",  -- "horizontal" | "vertical" | "float" | "tab"
-    size = 40,               -- Width/height depending on direction
-    go_back = false,         -- Retain focus in terminal
+    id = 10,                    -- Custom ToggleTerm ID
+    direction = "vertical",     -- "horizontal" | "vertical" | "float" | "tab"
+    size = 40,                  -- Width/height depending on direction
+    go_back = false,            -- Retain focus in terminal
   }
 }
 ```
@@ -107,9 +112,9 @@ Global defaults can also be configured in `setup()` under `terminal_opts`. Indiv
 
 ### Dynamic Placeholders
 1.  **`{input}`**:
-    - If opened with `open("file")`, resolves to the **relative path** of the active file.
-    - If opened with `open("word")`, resolves to the **word under the cursor**.
-    - If opened with `open("selection")`, resolves to the **selected text**.
+    - If context is `"file"`, resolves to the **relative path** of the active file.
+    - If context is `"word"`, resolves to the **word under the cursor**.
+    - If context is `"selection"`, resolves to the **selected text**.
 2.  **`{input:modifier}`**: (Only active in file-mode)
     - `{input:p}`: Absolute path.
     - `{input:h}`: Parent directory/head.
@@ -119,7 +124,7 @@ Global defaults can also be configured in `setup()` under `terminal_opts`. Indiv
     - Current line number, buffer total line count, or selection range start/end lines.
 4.  **`{line_text}`**:
     - Full text content of the current cursor line.
-5.  **`{clipboard}`**:
+  5.  **`{clipboard}`**:
     - Contents of the system clipboard (`+` or `"` register).
 6.  **`{selection}`**:
     - Visually selected text.
@@ -130,9 +135,42 @@ Global defaults can also be configured in `setup()` under `terminal_opts`. Indiv
 
 ---
 
-## ⌨️ Bindings
+## 🚀 Direct Execution & Keybindings
 
-Inside the Telescope picker:
+### 1. Direct Keybindings via Config
+Add `key` (or `keys` / `mapping`) to any command in `opts.commands`. `setup()` automatically registers them in Neovim:
+
+```lua
+{
+  name = "Run Python/Bash file",
+  cmd = "chmod +x {input} && {input:p}",
+  key = "<leader>rf", -- Pressing <leader>rf in Neovim runs this command directly!
+}
+```
+
+### 2. Lua API (`run`)
+You can trigger any command by name or index from your own mappings or Lua functions:
+
+```lua
+-- By command name:
+require("toggle-commands").run("Run Python/Bash file")
+
+-- By index (1-based):
+require("toggle-commands").run(1)
+
+-- With explicit context ("file", "word", "selection", or "auto"):
+require("toggle-commands").run("Grep occurrences in project", "word")
+```
+
+### 3. User Commands
+- `:ToggleCommand <Command Name>`: Executes a command directly with tab-completion.
+- `:ToggleCommands [file|word|selection]`: Opens the Telescope picker.
+
+---
+
+## ⌨️ Telescope Picker Bindings
+
+When browsing inside the Telescope picker:
 - `<CR>` (Enter): Execute the selected command.
 - `<C-e>`: Edit the fully substituted command in-line before running it.
-- `[Custom Key]`: Directly run any command configured with `key` / `mapping` (e.g., `<C-g>`).
+- `[Custom Key]`: Directly run any command configured with `key` / `mapping` if pressed inside the picker.

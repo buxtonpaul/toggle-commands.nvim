@@ -30,10 +30,6 @@ M.opts = {
   },
 }
 
-function M.setup(opts)
-  M.opts = vim.tbl_deep_extend("force", M.opts or {}, opts or {})
-end
-
 -- Helper to extract visual selection
 local function get_visual_selection()
   local mode_char = vim.fn.mode()
@@ -70,6 +66,63 @@ local function get_visual_selection()
   end
 
   return table.concat(lines, "\n"), start_line, end_line
+end
+
+-- Helper to construct full context table
+function M.build_context(mode)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+  local cursor_pos = vim.api.nvim_win_get_cursor(0)
+  local sel_text, s_line, e_line = get_visual_selection()
+
+  local is_file = false
+  local input = ""
+  local mode_name = "Auto"
+
+  local current_mode = vim.fn.mode()
+  local is_visual = current_mode:match("[vV\22]")
+
+  if mode == "file" then
+    input = filepath
+    is_file = true
+    mode_name = "File"
+  elseif mode == "word" then
+    input = vim.fn.expand("<cword>")
+    is_file = false
+    mode_name = "Word"
+  elseif mode == "selection" then
+    input = sel_text
+    is_file = false
+    mode_name = "Selection"
+  else
+    if is_visual and sel_text ~= "" then
+      input = sel_text
+      is_file = false
+      mode_name = "Selection"
+    elseif filepath and filepath ~= "" then
+      input = filepath
+      is_file = true
+      mode_name = "File"
+    else
+      input = vim.fn.expand("<cword>")
+      is_file = false
+      mode_name = "Word"
+    end
+  end
+
+  return {
+    input = input,
+    is_file = is_file,
+    bufnr = bufnr,
+    filepath = filepath,
+    line = cursor_pos[1],
+    line_count = vim.api.nvim_buf_line_count(bufnr),
+    line_text = vim.api.nvim_get_current_line(),
+    selection = sel_text,
+    start_line = s_line,
+    end_line = e_line,
+    mode_name = mode_name,
+  }
 end
 
 -- Helper to substitute placeholders in command templates
@@ -197,6 +250,48 @@ function M.execute_command(entry)
   end
 end
 
+-- Helper to find a command by name, index, or table
+local function find_command(identifier)
+  if type(identifier) == "table" then
+    return identifier
+  end
+  if type(identifier) == "number" then
+    return M.opts.commands and M.opts.commands[identifier]
+  end
+  if type(identifier) == "string" then
+    local num = tonumber(identifier)
+    if num and M.opts.commands and M.opts.commands[num] then
+      return M.opts.commands[num]
+    end
+    for _, cmd in ipairs(M.opts.commands or {}) do
+      if cmd.name:lower() == identifier:lower() then
+        return cmd
+      end
+    end
+  end
+  return nil
+end
+
+-- Launch a command directly from Neovim without opening the picker
+function M.run(identifier, context_mode)
+  local cmd_opt = find_command(identifier)
+  if not cmd_opt then
+    vim.notify("toggle-commands: Command not found: " .. tostring(identifier), vim.log.levels.ERROR)
+    return
+  end
+
+  local mode = context_mode or cmd_opt.context or "auto"
+  local ctx = M.build_context(mode)
+  local substituted = substitute(cmd_opt.cmd, ctx)
+
+  M.execute_command({
+    name = cmd_opt.name,
+    cmd_raw = cmd_opt.cmd,
+    cmd_substituted = substituted,
+    terminal_opts = cmd_opt.terminal_opts,
+  })
+end
+
 -- Open the picker
 function M.open_picker(val, is_file, extra_ctx)
   local pickers = require("telescope.pickers")
@@ -206,27 +301,32 @@ function M.open_picker(val, is_file, extra_ctx)
   local action_state = require("telescope.actions.state")
   local entry_display = require("telescope.pickers.entry_display")
 
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cursor_pos = vim.api.nvim_win_get_cursor(0)
+  local ctx
+  if type(val) == "table" and val.input ~= nil then
+    ctx = val
+  else
+    local bufnr = vim.api.nvim_get_current_buf()
+    local cursor_pos = vim.api.nvim_win_get_cursor(0)
 
-  local ctx = {
-    input = val,
-    is_file = is_file,
-    bufnr = bufnr,
-    filepath = vim.api.nvim_buf_get_name(bufnr),
-    line = cursor_pos[1],
-    line_count = vim.api.nvim_buf_line_count(bufnr),
-    line_text = vim.api.nvim_get_current_line(),
-  }
+    ctx = {
+      input = val,
+      is_file = is_file,
+      bufnr = bufnr,
+      filepath = vim.api.nvim_buf_get_name(bufnr),
+      line = cursor_pos[1],
+      line_count = vim.api.nvim_buf_line_count(bufnr),
+      line_text = vim.api.nvim_get_current_line(),
+    }
 
-  if extra_ctx then
-    ctx = vim.tbl_deep_extend("force", ctx, extra_ctx)
+    if extra_ctx then
+      ctx = vim.tbl_deep_extend("force", ctx, extra_ctx)
+    end
   end
 
   local items = {}
   for _, cmd_opt in ipairs(M.opts.commands) do
     local substituted = substitute(cmd_opt.cmd, ctx)
-    local key = cmd_opt.key or cmd_opt.mapping
+    local key = cmd_opt.key or cmd_opt.keys or cmd_opt.mapping
     local key_label = ""
     if key then
       key_label = type(key) == "table" and table.concat(key, ", ") or tostring(key)
@@ -260,8 +360,8 @@ function M.open_picker(val, is_file, extra_ctx)
     },
   }
 
-  local display_name = ctx.mode_name or (is_file and "File" or "Word")
-  local display_val = is_file and vim.fn.fnamemodify(val, ":t") or val
+  local display_name = ctx.mode_name or (ctx.is_file and "File" or "Word")
+  local display_val = ctx.is_file and vim.fn.fnamemodify(ctx.input, ":t") or ctx.input
   if #display_val > 25 then
     display_val = display_val:sub(1, 22) .. "..."
   end
@@ -334,7 +434,7 @@ function M.open_picker(val, is_file, extra_ctx)
   }):find()
 end
 
--- Main interface function
+-- Main interface function to open picker
 function M.open(mode)
   local val = ""
   local is_file = false
@@ -370,6 +470,71 @@ function M.open(mode)
   end
 
   M.open_picker(val, is_file, extra_ctx)
+end
+
+function M.setup(opts)
+  M.opts = vim.tbl_deep_extend("force", M.opts or {}, opts or {})
+
+  -- Register global keybindings for configured commands
+  for idx, cmd_opt in ipairs(M.opts.commands or {}) do
+    local key = cmd_opt.key or cmd_opt.keys or cmd_opt.mapping
+    if key then
+      local keys = type(key) == "table" and key or { key }
+      local key_modes = cmd_opt.key_mode or cmd_opt.key_modes
+      if not key_modes then
+        if cmd_opt.context == "selection" then
+          key_modes = { "v" }
+        else
+          key_modes = { "n", "v" }
+        end
+      end
+      if type(key_modes) == "string" then
+        key_modes = { key_modes }
+      end
+
+      local target_cmd = cmd_opt
+      for _, k in ipairs(keys) do
+        vim.keymap.set(key_modes, k, function()
+          M.run(target_cmd, target_cmd.context)
+        end, {
+          desc = target_cmd.name or ("Toggle Command " .. idx),
+          silent = true,
+        })
+      end
+    end
+  end
+
+  -- Register user commands
+  pcall(vim.api.nvim_create_user_command, "ToggleCommand", function(cmd_opts)
+    if cmd_opts.args and cmd_opts.args ~= "" then
+      M.run(cmd_opts.args)
+    else
+      M.open("file")
+    end
+  end, {
+    nargs = "?",
+    complete = function(arg_lead)
+      local matches = {}
+      for _, cmd in ipairs(M.opts.commands or {}) do
+        if not arg_lead or arg_lead == "" or cmd.name:lower():find(arg_lead:lower(), 1, true) then
+          table.insert(matches, cmd.name)
+        end
+      end
+      return matches
+    end,
+    desc = "Run a toggle-command directly by name or index",
+  })
+
+  pcall(vim.api.nvim_create_user_command, "ToggleCommands", function(cmd_opts)
+    local mode = (cmd_opts.args and cmd_opts.args ~= "") and cmd_opts.args or "file"
+    M.open(mode)
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "file", "word", "selection" }
+    end,
+    desc = "Open toggle-commands picker",
+  })
 end
 
 return M
