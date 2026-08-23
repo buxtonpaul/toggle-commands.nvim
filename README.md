@@ -24,6 +24,7 @@ Install with your favorite package manager:
 ```lua
 {
   "buxtonpaul/toggle-commands.nvim",
+  lazy = false, -- Recommended if you use direct `key` shortcuts inside `opts.commands`
   dependencies = {
     "nvim-telescope/telescope.nvim",
     "akinsho/toggleterm.nvim",
@@ -147,6 +148,8 @@ Add `key` (or `keys` / `mapping`) to any command in `opts.commands`. `setup()` a
   key = "<leader>rf", -- Pressing <leader>rf in Neovim runs this command directly!
 }
 ```
+
+> **Note for `lazy.nvim` users:** Global keymaps configured via `key` in `opts.commands` are created when `require("toggle-commands").setup(...)` runs. If `lazy.nvim` lazy-loads the plugin (e.g., using a plugin-level `keys` table), `setup()` won't run until one of those trigger keys is pressed. Set `lazy = false` (or `event = "VeryLazy"`) in your lazy spec so your direct command shortcuts are active immediately upon startup.
 
 ### 2. Lua API (`run`)
 You can trigger any command by name or index from your own mappings or Lua functions:
